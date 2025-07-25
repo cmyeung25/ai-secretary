@@ -1,0 +1,555 @@
+import sqlite3
+import json
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+from neo4j import GraphDatabase
+import chromadb
+import google.generativeai as genai
+from memory_enhancements import SmartMemoryRetrieval, create_memory_summary
+
+class ConversationLogger:
+    """管理原始對話日誌的類別。"""
+    
+    def __init__(self, db_path: str = "conversation_logs.db"):
+        self.db_path = db_path
+        self._init_db()
+    
+    def _init_db(self):
+        """初始化 SQLite 數據庫。"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                timestamp DATETIME,
+                speaker TEXT,
+                message TEXT,
+                processed BOOLEAN DEFAULT FALSE
+            )
+        """)
+        conn.commit()
+        conn.close()
+    
+    def log_message(self, session_id: str, speaker: str, message: str) -> int:
+        """記錄一條對話訊息。"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO conversation_logs (session_id, timestamp, speaker, message)
+            VALUES (?, ?, ?, ?)
+        """, (session_id, datetime.now(), speaker, message))
+        message_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return message_id
+    
+    def get_unprocessed_messages(self) -> List[Dict[str, Any]]:
+        """獲取未處理的訊息。"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, session_id, timestamp, speaker, message
+            FROM conversation_logs
+            WHERE processed = FALSE
+        """)
+        messages = [
+            {
+                "id": row[0],
+                "session_id": row[1],
+                "timestamp": row[2],
+                "speaker": row[3],
+                "message": row[4]
+            }
+            for row in cursor.fetchall()
+        ]
+        conn.close()
+        return messages
+    
+    def mark_as_processed(self, message_id: int):
+        """標記訊息為已處理。"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE conversation_logs
+            SET processed = TRUE
+            WHERE id = ?
+        """, (message_id,))
+        conn.commit()
+        conn.close()
+
+class MemoryFilter:
+    """記憶篩選器，判斷對話內容是否值得深度記憶。"""
+    
+    def __init__(self, google_api_key: str):
+        genai.configure(api_key=google_api_key)
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
+    
+    def is_worth_remembering(self, message: str, speaker: str, context: str = "") -> bool:
+        """判斷訊息是否值得深度記憶。"""
+        # 規則 1: 用戶明確要求記住
+        if speaker == "user" and any(keyword in message for keyword in ["記住", "記低", "記錄"]):
+            return True
+        
+        # 規則 2: 使用 LLM 做語義判斷
+        prompt = f"""
+        # 任務
+        請嚴格判斷以下對話片段是否需要存入使用者的**長期記憶圖譜**。長期記憶用於記錄：
+        - 使用者的**個人事實** (e.g., 我對貓過敏、我下週五生日)
+        - **重要決定/承諾** (e.g., 我決定買 X 產品、答應明天回覆張三)
+        - **任務/行動項** (有明確執行者和時間)
+        - **關鍵關係變化** (e.g., 李四升職為我的主管)
+        - **使用者特別標記的重要資訊**
+
+        # 不需要存入長期記憶的情況
+        - AI 提供的**一般性建議/選項** (e.g., "你可以考慮 A 或 B 方案")
+        - **閒聊/寒暄**
+        - **臨時性查詢結果** (e.g., "今日天氣晴，25度")
+        - **冗長的解釋性內容** (除非包含核心結論)
+
+        # 對話片段
+        [發言者: {speaker}]
+        {message}
+
+        # 上下文 (最近幾條對話)
+        {context}
+
+        # 輸出要求
+        只輸出 "YES" 或 "NO"，不要任何解釋。
+        """
+        
+        try:
+            response = self.model.generate_content(prompt)
+            return "YES" in response.text.strip()
+        except Exception as e:
+            print(f"記憶篩選錯誤: {e}")
+            return False
+
+class KnowledgeExtractor:
+    """知識提取器，從高價值對話中提取結構化知識。"""
+    
+    def __init__(self, google_api_key: str):
+        genai.configure(api_key=google_api_key)
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
+    
+    def extract_knowledge(self, message: str, speaker: str, context: str = "") -> Optional[Dict[str, Any]]:
+        """從對話中提取結構化知識。"""
+        prompt = f"""
+        # 任務
+        從以下**使用者標記為重要**的對話中，提取需要存入長期記憶圖譜的結構化知識：
+
+        # 提取重點 (針對 AI 秘書場景)
+        1. **使用者的事實/偏好**:
+           - 屬性: 健康狀況 (過敏、疾病)、個人喜好 (食物、興趣)、人生事件 (生日、紀念日)、生活方式習慣
+           - 範例: "我對花生嚴重過敏" -> [屬性: 健康狀況=過敏源:花生]
+        2. **使用者的決策/承諾**:
+           - 實體: 決策項目、相關人/組織、時間點
+           - 關係: (使用者)-[:DECIDED]->(決策), (決策)-[:RELATED_TO]->(項目)
+           - 範例: "我決定採用方案B" -> [決策: 採用方案B] + 關係
+        3. **指派的行動項 (Task)**:
+           - 必須有**執行者** (使用者自己、AI、他人)、**內容**、**截止時間** (如有)
+           - 範例: "AI請幫我下週一提醒預約牙醫" -> [任務: 預約牙醫, 執行者:AI, 期限:下週一]
+        4. **重要關係更新**:
+           - 人/組織的**角色變化**、**聯絡方式更新**、與使用者的**關係定義** (e.g., "張三現在是我的主要技術聯絡人")
+        5. **專案/目標狀態**:
+           - 里程碑達成、進度百分比、關鍵阻礙
+
+        # 不需要提取
+        - AI 提供的其他未被採納的建議選項
+        - 背景解釋資訊
+
+        # 輸出格式 (嚴格遵守 JSON Schema)
+        {{
+          "entities": [
+            {{
+              "name": "實體名稱 (e.g., 張三)",
+              "type": "實體類型 (e.g., Person, Project, Organization, Role, Date)",
+              "attributes": {{
+                "職位": "資深工程師",
+                "郵箱": "zs@abc.com",
+                "部門": "工程部"
+              }}
+            }}
+          ],
+          "relations": [
+            {{
+              "source": "來源實體名稱",
+              "target": "目標實體名稱",
+              "type": "關係類型 (e.g., 屬於, 負責, 提出, 參與, 跟進, 需要)"
+            }}
+          ],
+          "events": [
+            {{
+              "description": "事件描述 (e.g., 將於下週五前提交報告)",
+              "actor": "主要執行者 (e.g., 張三)",
+              "object": "涉及對象 (e.g., Project X 進度報告)",
+              "date": "日期 (e.g., 2025-07-25)"
+            }}
+          ],
+          "summary": "文本的核心摘要"
+        }}
+
+        # 文本
+        [發言者: {speaker}]
+        {message}
+
+        # 上下文
+        {context}
+        """
+        
+        try:
+            response = self.model.generate_content(prompt)
+            response_text = response.text.strip()
+            
+            # 檢查回應是否為空
+            if not response_text:
+                print("知識提取錯誤: 模型回應為空")
+                return None
+            
+            # 嘗試提取 JSON 部分（如果回應包含其他文本）
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                if json_end != -1:
+                    response_text = response_text[json_start:json_end].strip()
+            elif "{" in response_text and "}" in response_text:
+                # 提取第一個完整的 JSON 對象
+                json_start = response_text.find("{")
+                json_end = response_text.rfind("}") + 1
+                response_text = response_text[json_start:json_end]
+            
+            return json.loads(response_text)
+        except json.JSONDecodeError as e:
+            print(f"知識提取錯誤 (JSON 解析失敗): {e}")
+            print(f"原始回應: {response.text[:200]}...")
+            return None
+        except Exception as e:
+            print(f"知識提取錯誤: {e}")
+            return None
+
+class Neo4jMemoryStore:
+    """Neo4j 長期記憶存儲。"""
+    
+    def __init__(self, uri: str, user: str, password: str):
+        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+    
+    def close(self):
+        """關閉數據庫連接。"""
+        self.driver.close()
+    
+    def store_knowledge(self, knowledge: Dict[str, Any], source_log_id: int):
+        """將提取的知識存入 Neo4j。"""
+        with self.driver.session() as session:
+            session.execute_write(self._create_knowledge_graph, knowledge, source_log_id)
+    
+    def _create_knowledge_graph(self, tx, data: Dict[str, Any], source_log_id: int):
+        """在事務中創建知識圖譜。"""
+        # 1. 處理 Entities (節點)
+        for entity in data.get("entities", []):
+            label = entity["type"]
+            props = {"name": entity["name"]}
+            if "attributes" in entity and entity["attributes"]:
+                props.update(entity["attributes"])
+            
+            tx.run(f"""
+                MERGE (n:{label} {name: $name})
+                SET n += $props
+                """, name=entity["name"], props=props)
+        
+        # 2. 處理 Relations (關係)
+        for relation in data.get("relations", []):
+            tx.run(""                MATCH (source {name: $source_name})
+                MATCH (target {name: $target_name})
+                MERGE (source)-[r:RELATED_TO]->(target) 
+                SET r.type = $rel_type               """, 
+                source_name=relation["source"],
+                target_name=relation["target"],
+                rel_type=relation["type"])
+        
+        # 3. 處理 Events (可作為節點)
+        for event in data.get("events", []):
+            tx.run("""
+                CREATE (e:Event {
+                    description: $desc,
+                    date: $date,
+                    source_log_id: $source_log_id
+                })
+                """, desc=event["description"], date=event.get("date"), source_log_id=source_log_id)
+            
+            # 關聯 Actor (Person)
+            if event.get("actor"):
+                tx.run("""
+                    MATCH (e:Event {description: $desc})
+                    MATCH (p:Person {name: $actor_name})
+                    MERGE (p)-[:PERFORMED]->(e)
+                    """, desc=event["description"], actor_name=event["actor"])
+        
+        # 4. 儲存 Summary
+        if data.get("summary"):
+            tx.run("""
+                CREATE (s:Summary {
+                    text: $text,
+                    source_log_id: $source_log_id
+                })
+                """, text=data["summary"], source_log_id=source_log_id)
+
+class VectorMemoryStore:
+    """向量記憶存儲."""
+    
+    def __init__(self, collection_name: str = "ai_secretary_memory"):
+        self.client = chromadb.Client()
+        self.collection = self.client.get_or_create_collection(name=collection_name)
+    
+    def store_message(self, message_id: str, message: str, metadata: Dict[str, Any] = None):
+        """存儲訊息的向量嵌入."""
+        self.collection.add(
+            documents=[message],
+            metadatas=[metadata or {}],
+            ids=[str(message_id)]
+        )
+    
+    def search_similar(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        """搜索語義相似的訊息."""
+        results = self.collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+        return results
+
+class MemoryManager:
+    """記憶管理器, 整合所有記憶組件."""
+    
+    def __init__(self, google_api_key: str, neo4j_uri: str, neo4j_user: str, neo4j_password: str):
+        self.conversation_logger = ConversationLogger()
+        self.memory_filter = MemoryFilter(google_api_key)
+        self.knowledge_extractor = KnowledgeExtractor(google_api_key)
+        self.neo4j_store = Neo4jMemoryStore(neo4j_uri, neo4j_user, neo4j_password)
+        self.vector_store = VectorMemoryStore()
+        self.smart_retrieval = SmartMemoryRetrieval()  # 添加智能檢索器
+    
+    def process_message(self, session_id: str, speaker: str, message: str):
+        """處理一條訊息."""
+        # 1. 記錄原始對話
+        message_id = self.conversation_logger.log_message(session_id, speaker, message)
+        
+        # 2. 存儲向量嵌入
+        self.vector_store.store_message(
+            message_id, 
+            message, 
+            {"session_id": session_id, "speaker": speaker, "timestamp": datetime.now().isoformat()}
+        )
+        
+        # 3. 判斷是否值得深度記憶
+        if self.memory_filter.is_worth_remembering(message, speaker):
+            # 4. 提取結構化知識
+            knowledge = self.knowledge_extractor.extract_knowledge(message, speaker)
+            if knowledge:
+                # 5. 存入 Neo4j
+                self.neo4j_store.store_knowledge(knowledge, message_id)
+                # 6. 標記為已處理
+                self.conversation_logger.mark_as_processed(message_id)
+    
+    def search_memory(self, query: str, limit: int = 5) -> Dict[str, Any]:
+        """增強的記憶搜索功能, 結合向量搜索和圖搜索."""
+        results = {
+            "vector_results": {"documents": [[]], "metadatas": [[]], "distances": [[]]},
+            "graph_results": [],
+            "combined_results": [],
+            "smart_results": [],
+            "summary": ""
+        }
+        
+        try:
+            # 1. 向量搜索 - 基於語義相似性
+            vector_results = self.vector_store.search_similar(query, n_results=limit)
+            results["vector_results"] = vector_results
+            
+            # 2. Neo4j 圖搜索 - 基於實體和關係
+            graph_results = self._search_graph_memory(query, limit)
+            results["graph_results"] = graph_results
+            
+            # 3. 結合和排序結果
+            combined_results = self._combine_and_rank_results(
+                vector_results, graph_results, query
+            )
+            results["combined_results"] = combined_results
+            
+            # 4. 使用智能檢索器進行增強分析
+            if combined_results:
+                smart_results = self.smart_retrieval.enhanced_search(
+                    query, combined_results
+                )
+                results["smart_results"] = smart_results
+                
+                # 5. 生成記憶摘要
+                results["summary"] = create_memory_summary(smart_results[:5])
+            
+        except Exception as e:
+            print(f"記憶搜索錯誤: {e}")
+        
+        return results
+    
+    def _search_graph_memory(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """在 Neo4j 圖數據庫中搜索相關記憶."""
+        try:
+            with self.neo4j_store.driver.session() as session:
+                # 搜索實體名稱包含查詢關鍵字的節點
+                cypher_query = """
+                MATCH (n)
+                WHERE toLower(n.name) CONTAINS toLower($query)
+                   OR ANY(prop IN keys(n) WHERE toLower(toString(n[prop])) CONTAINS toLower($query))
+                OPTIONAL MATCH (n)-[r]-(connected)
+                RETURN n, r, connected
+                LIMIT $limit
+                """
+                
+                result = session.run(cypher_query, query=query, limit=limit)
+                graph_results = []
+                
+                for record in result:
+                    node = record["n"]
+                    relation = record["r"]
+                    connected = record["connected"]
+                    
+                    result_item = {
+                        "type": "graph_entity",
+                        "entity": dict(node) if node else None,
+                        "relation": {
+                            "type": relation.type if relation else None,
+                            "properties": dict(relation) if relation else None
+                        } if relation else None,
+                        "connected_entity": dict(connected) if connected else None,
+                        "relevance_score": self._calculate_graph_relevance(query, node, relation, connected)
+                    }
+                    graph_results.append(result_item)
+                
+                return sorted(graph_results, key=lambda x: x["relevance_score"], reverse=True)
+                
+        except Exception as e:
+            print(f"圖搜索錯誤: {e}")
+            return []
+    
+    def _calculate_graph_relevance(self, query: str, node, relation, connected) -> float:
+        """計算圖搜索結果的相關性分數."""
+        score = 0.0
+        query_lower = query.lower()
+        
+        # 檢查主節點的相關性
+        if node:
+            node_dict = dict(node)
+            if "name" in node_dict and query_lower in node_dict["name"].lower():
+                score += 1.0
+            
+            # 檢查節點屬性
+            for key, value in node_dict.items():
+                if isinstance(value, str) and query_lower in value.lower():
+                    score += 0.5
+        
+        # 檢查關係的相關性
+        if relation:
+            if query_lower in relation.type.lower():
+                score += 0.3
+        
+        # 檢查連接節點的相關性
+        if connected:
+            connected_dict = dict(connected)
+            if "name" in connected_dict and query_lower in connected_dict["name"].lower():
+                score += 0.7
+        
+        return score
+    
+    def _combine_and_rank_results(self, vector_results, graph_results, query: str) -> List[Dict[str, Any]]:
+        """結合向量搜索和圖搜索結果, 並進行智能排序."""
+        combined = []
+        
+        # 處理向量搜索結果
+        if vector_results and vector_results.get("documents") and vector_results["documents"][0]:
+            for i, doc in enumerate(vector_results["documents"][0]):
+                metadata = vector_results["metadatas"][0][i] if i < len(vector_results["metadatas"][0]) else {}
+                distance = vector_results["distances"][0][i] if i < len(vector_results["distances"][0]) else 1.0
+                
+                combined.append({
+                    "type": "vector",
+                    "content": doc,
+                    "metadata": metadata,
+                    "score": 1.0 - distance,  # 轉換距離為相似性分數
+                    "source": "vector_search"
+                })
+        
+        # 處理圖搜索結果
+        for graph_result in graph_results:
+            # 構建圖結果的文本描述
+            content = self._format_graph_result(graph_result)
+            
+            combined.append({
+                "type": "graph",
+                "content": content,
+                "metadata": {
+                    "entity": graph_result.get("entity", {}),
+                    "relation": graph_result.get("relation", {}),
+                    "connected_entity": graph_result.get("connected_entity", {})
+                },
+                "score": graph_result.get("relevance_score", 0.0),
+                "source": "graph_search"
+            })
+        
+        # 按分數排序並去重
+        combined.sort(key=lambda x: x["score"], reverse=True)
+        
+        # 簡單去重（基於內容相似性）
+        unique_results = []
+        for result in combined:
+            is_duplicate = False
+            for existing in unique_results:
+                if self._is_similar_content(result["content"], existing["content"]):
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_results.append(result)
+        
+        return unique_results[:10]  # 返回前10個結果
+    
+    def _format_graph_result(self, graph_result: Dict[str, Any]) -> str:
+        """格式化圖搜索結果為可讀文本."""
+        entity = graph_result.get("entity", {})
+        relation = graph_result.get("relation", {})
+        connected = graph_result.get("connected_entity", {})
+        
+        if not entity:
+            return "未知實體"
+        
+        result_text = f"實體: {entity.get('name', '未知')}"
+        
+        # 添加實體屬性
+        for key, value in entity.items():
+            if key != "name" and value:
+                result_text += f", {key}: {value}"
+        
+        # 添加關係信息
+        if relation and relation.get("type") and connected:
+            result_text += f" | 關係: {relation['type']} -> {connected.get('name', '未知')}"
+        
+        return result_text
+    
+    def _is_similar_content(self, content1: str, content2: str, threshold: float = 0.8) -> bool:
+        """檢查兩個內容是否相似(簡單的字符串相似性檢查)."""
+        if not content1 or not content2:
+            return False
+        
+        # 簡單的相似性檢查：計算共同詞彙的比例
+        words1 = set(content1.lower().split())
+        words2 = set(content2.lower().split())
+        
+        if not words1 or not words2:
+            return False
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        similarity = len(intersection) / len(union) if union else 0
+        return similarity >= threshold
+    
+    def close(self):
+        """關閉所有連接."""
+        self.neo4j_store.close()
+

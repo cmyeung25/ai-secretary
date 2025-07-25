@@ -1,0 +1,16 @@
+langchain
+langchain-google-genai
+langchain-community
+google-generativeai
+chromadb
+neo4j
+python-dotenv
+flask
+flask-cors
+sseclient-py
+aiohttp
+requests
+
+
+flask_sqlalchemy
+
