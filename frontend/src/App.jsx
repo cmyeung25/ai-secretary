@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button.jsx'
+import ModelSelector from '@/components/ui/modelSelector.jsx'
 import { Input } from '@/components/ui/input.jsx'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.jsx'
 import { ScrollArea } from '@/components/ui/scroll-area.jsx'
@@ -18,16 +19,25 @@ function App() {
   const [inputMessage, setInputMessage] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const scrollAreaRef = useRef(null)
-
-  // 自動滾動到底部
+  const messagesEndRef = useRef(null)
+  
+  // 自動滾動到底部 - 修復版
   useEffect(() => {
-    if (scrollAreaRef.current) {
-      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]')
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight
+    // 使用 requestAnimationFrame 確保在 DOM 更新後執行
+    requestAnimationFrame(() => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({
+          behavior: 'smooth',
+          block: 'end'
+        });
+      } else if (scrollAreaRef.current) {
+        const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
       }
-    }
-  }, [messages])
+    });
+  }, [messages]);
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return
@@ -103,7 +113,7 @@ function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="max-w-4xl mx-auto">
-        <Card className="h-[90vh] flex flex-col">
+        <Card className="h-[90dvh] flex flex-col">
           <CardHeader className="border-b bg-white/80 backdrop-blur-sm">
             <CardTitle className="flex items-center gap-2 text-2xl font-bold text-gray-800">
               <Bot className="w-8 h-8 text-blue-600" />
@@ -112,8 +122,11 @@ function App() {
             <p className="text-gray-600">您的智能助手，隨時為您服務</p>
           </CardHeader>
           
-          <CardContent className="flex-1 flex flex-col p-0">
-            <ScrollArea ref={scrollAreaRef} className="flex-1 p-4">
+          <CardContent className="flex-1 flex flex-col p-0 overflow-hidden">
+            <ScrollArea 
+              ref={scrollAreaRef} 
+              className="flex-1 p-4 min-h-0"
+            >
               <div className="space-y-4">
                 {messages.map((message) => (
                   <div
@@ -129,7 +142,7 @@ function App() {
                     )}
                     
                     <div
-                      className={`max-w-[70%] rounded-lg px-4 py-2 ${
+                      className={`max-w-[calc(100%-4rem)] md:max-w-[70%] rounded-lg px-4 py-2 break-words ${
                         message.type === 'user'
                           ? 'bg-blue-600 text-white'
                           : 'bg-gray-100 text-gray-800'
@@ -168,6 +181,9 @@ function App() {
                     </div>
                   </div>
                 )}
+                
+                {/* 添加滾動錨點 */}
+                <div ref={messagesEndRef} />
               </div>
             </ScrollArea>
 
@@ -193,6 +209,9 @@ function App() {
                   )}
                 </Button>
               </div>
+              <div className="flex">
+                <ModelSelector />
+              </div>
               <p className="text-xs text-gray-500 mt-2 text-center">
                 輸入 '[記住] 內容' 來明確標記重要資訊
               </p>
@@ -205,4 +224,3 @@ function App() {
 }
 
 export default App
-

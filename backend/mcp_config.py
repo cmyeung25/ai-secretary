@@ -14,62 +14,68 @@ def get_mcp_servers_config() -> List[Dict[str, Any]]:
     
     # 從環境變數讀取配置
     servers = []
-    
-    # 示例配置 1: 文件系統服務器
-    if os.getenv("MCP_FILE_SERVER_URL"):
-        servers.append({
-            "name": "file_server",
-            "url": os.getenv("MCP_FILE_SERVER_URL"),
-            "auth_token": os.getenv("MCP_FILE_SERVER_TOKEN"),
-            "headers": {
-                "X-Client-Name": "AI-Secretary"
-            },
-            "timeout": 30
-        })
-    
-    # 示例配置 2: 數據庫服務器
-    if os.getenv("MCP_DATABASE_SERVER_URL"):
-        servers.append({
-            "name": "database_server", 
-            "url": os.getenv("MCP_DATABASE_SERVER_URL"),
-            "auth_token": os.getenv("MCP_DATABASE_SERVER_TOKEN"),
-            "timeout": 60
-        })
-    
-    # 示例配置 3: API 服務器
-    if os.getenv("MCP_API_SERVER_URL"):
-        servers.append({
-            "name": "api_server",
-            "url": os.getenv("MCP_API_SERVER_URL"),
-            "auth_token": os.getenv("MCP_API_SERVER_TOKEN"),
-            "headers": {
-                "X-API-Version": "v1",
-                "X-Client-Name": "AI-Secretary"
-            },
-            "timeout": 45
-        })
-    
-    # 硬編碼配置示例（用於測試）
-    # 取消註釋並修改以下配置來添加您的 MCP 服務器
-    """
     servers.extend([
         {
-            "name": "my_mcp_server",
-            "url": "http://localhost:3001/events",
-            "auth_token": "your_auth_token_here",
-            "headers": {
-                "X-Custom-Header": "custom_value"
-            },
+            "name": "playwright",
+            "url": "http://localhost:8931/sse",
             "timeout": 30
         },
-        {
-            "name": "another_server",
-            "url": "https://your-mcp-server.com/sse",
-            "auth_token": "another_token",
-            "timeout": 60
-        }
     ])
-    """
+    # # 示例配置 1: 文件系統服務器
+    # if os.getenv("MCP_FILE_SERVER_URL"):
+    #     servers.append({
+    #         "name": "file_server",
+    #         "url": os.getenv("MCP_FILE_SERVER_URL"),
+    #         "auth_token": os.getenv("MCP_FILE_SERVER_TOKEN"),
+    #         "headers": {
+    #             "X-Client-Name": "AI-Secretary"
+    #         },
+    #         "timeout": 30
+    #     })
+    
+    # # 示例配置 2: 數據庫服務器
+    # if os.getenv("MCP_DATABASE_SERVER_URL"):
+    #     servers.append({
+    #         "name": "database_server", 
+    #         "url": os.getenv("MCP_DATABASE_SERVER_URL"),
+    #         "auth_token": os.getenv("MCP_DATABASE_SERVER_TOKEN"),
+    #         "timeout": 60
+    #     })
+    
+    # # 示例配置 3: API 服務器
+    # if os.getenv("MCP_API_SERVER_URL"):
+    #     servers.append({
+    #         "name": "api_server",
+    #         "url": os.getenv("MCP_API_SERVER_URL"),
+    #         "auth_token": os.getenv("MCP_API_SERVER_TOKEN"),
+    #         "headers": {
+    #             "X-API-Version": "v1",
+    #             "X-Client-Name": "AI-Secretary"
+    #         },
+    #         "timeout": 45
+    #     })
+    
+    # # 硬編碼配置示例（用於測試）
+    # # 取消註釋並修改以下配置來添加您的 MCP 服務器
+    # """
+    # servers.extend([
+    #     {
+    #         "name": "my_mcp_server",
+    #         "url": "http://localhost:3001/events",
+    #         "auth_token": "your_auth_token_here",
+    #         "headers": {
+    #             "X-Custom-Header": "custom_value"
+    #         },
+    #         "timeout": 30
+    #     },
+    #     {
+    #         "name": "another_server",
+    #         "url": "https://your-mcp-server.com/sse",
+    #         "auth_token": "another_token",
+    #         "timeout": 60
+    #     }
+    # ])
+    # """
     
     return servers
 

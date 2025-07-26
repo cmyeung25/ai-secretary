@@ -43,33 +43,34 @@ class MCPClient:
         self.pending_requests: Dict[str, queue.Queue] = {}
         
     def connect(self) -> bool:
-        """連接到 MCP 服務器"""
+        """連接到 MCP 服務器，Playwright MCP 僅使用 SSE，不請求 /tools"""
+        headers = self.config.headers or {}
+        if self.config.auth_token:
+            headers['Authorization'] = f'Bearer {self.config.auth_token}'
+        health_url = None
+        if self.config.url.endswith('/events'):
+            health_url = self.config.url.replace('/events', '/health')
+        elif self.config.url.endswith('/sse'):
+            health_url = self.config.url.replace('/sse', '/health')
+        if health_url:
+            try:
+                response = requests.get(health_url, headers=headers, timeout=5)
+                if response.status_code == 200:
+                    print(f"✅ MCP 服務器健康檢查通過: {self.config.name}")
+                else:
+                    print(f"⚠️ MCP 服務器健康檢查失敗: {self.config.name} (狀態碼: {response.status_code})，繼續嘗試 SSE 連接")
+            except Exception as e:
+                print(f"⚠️ MCP 服務器健康檢查異常: {self.config.name} - {str(e)}，繼續嘗試 SSE 連接")
         try:
-            headers = self.config.headers or {}
-            if self.config.auth_token:
-                headers['Authorization'] = f'Bearer {self.config.auth_token}'
-            
-            # 測試連接
-            response = requests.get(
-                self.config.url.replace('/events', '/health'), 
-                headers=headers, 
-                timeout=self.config.timeout
-            )
-            
-            if response.status_code == 200:
-                # 啟動 SSE 監聽線程
-                self._start_sse_listener()
-                # 獲取可用工具
+            self._start_sse_listener()
+            # 只對非 Playwright MCP 服務器請求 /tools
+            if self.config.name.lower() != "playwright":
                 self._fetch_tools()
-                self.connection_active = True
-                print(f"✅ 成功連接到 MCP 服務器: {self.config.name}")
-                return True
-            else:
-                print(f"❌ 無法連接到 MCP 服務器: {self.config.name} (狀態碼: {response.status_code})")
-                return False
-                
+            self.connection_active = True
+            print(f"✅ 成功連接到 MCP 服務器（SSE）: {self.config.name}")
+            return True
         except Exception as e:
-            print(f"❌ 連接 MCP 服務器失敗: {self.config.name} - {str(e)}")
+            print(f"❌ 連接 MCP 服務器（SSE）失敗: {self.config.name} - {str(e)}")
             return False
     
     def _start_sse_listener(self):

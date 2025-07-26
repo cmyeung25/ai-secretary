@@ -3,10 +3,24 @@ import sys
 # DON'T CHANGE THIS !!!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request, jsonify
 from src.models.user import db
 from src.routes.user import user_bp
 from src.routes.chat import chat_bp
+
+from src.services.api_key_manager import api_key_manager
+from main import AISecretary
+
+# Pre-load MCP servers and tools with a global AISecretary instance (using any valid key)
+PRELOAD_MODEL = 'gemini-2.5-pro'
+try:
+    PRELOAD_API_KEY = api_key_manager.get_key(PRELOAD_MODEL)
+    global_ai_secretary = AISecretary(PRELOAD_MODEL, PRELOAD_API_KEY)
+    print('✅ MCP servers and tools pre-loaded on startup.')
+except Exception as e:
+    global_ai_secretary = None
+    print(f'⚠️ MCP preload failed: {e}')
+
 
 app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
 app.config['SECRET_KEY'] = 'asdf#FGSgvasgf$5$WGT'

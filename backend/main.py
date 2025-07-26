@@ -13,8 +13,7 @@ from mcp_config import get_mcp_servers_config, get_mcp_settings
 import uuid
 import google.generativeai as genai
 
-# 配置 Google Generative AI
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+
 
 # 顯式禁用 Application Default Credentials (ADC)
 os.environ["GOOGLE_API_USE_ADC"] = "False"
@@ -22,17 +21,20 @@ os.environ["GOOGLE_API_USE_ADC"] = "False"
 class AISecretary:
     """AI 秘書主類別。"""
     
-    def __init__(self):
+    def __init__(self, model, api_key):
+        # 配置 Google Generative AI
+        genai.configure(api_key=api_key)
+        
         # 初始化 LLM
         self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model=model,
             temperature=0.1,
-            google_api_key=os.getenv("GOOGLE_API_KEY") # 確保 API Key 被傳遞
+            google_api_key=api_key # 確保 API Key 被傳遞
         )
         
         # 初始化記憶管理器
         self.memory_manager = MemoryManager(
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            google_api_key=api_key,
             neo4j_uri=os.getenv("NEO4J_URI", "neo4j://localhost:7687"),
             neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
             neo4j_password=os.getenv("NEO4J_PASSWORD", "password")
@@ -54,7 +56,7 @@ class AISecretary:
     def _setup_mcp(self):
         """設置 MCP 連接"""
         mcp_settings = get_mcp_settings()
-        
+        print(mcp_settings)
         if not mcp_settings.get("enable_mcp", False):
             print("📋 MCP 功能已禁用")
             return
@@ -179,6 +181,7 @@ def main():
     finally:
         # 關閉連接
         secretary.close()
+
 
 if __name__ == "__main__":
     main()

@@ -118,3 +118,35 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* 添加滾動修復 */
+[data-radix-scroll-area-viewport] {
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column;
+}
+
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+}
+
+.scroll-area {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 確保滾動容器可以滾動 */
+[data-radix-scroll-area-viewport] {
+  overflow-y: auto !important;
+}
+
+/* 移動端優化 */
+@media (max-width: 640px) {
+  .message-bubble {
+    max-width: calc(100% - 4rem) !important;
+  }
+  
+  .scroll-area {
+    padding: 0.5rem;
+  }
+}
